@@ -64,10 +64,16 @@ Future<void> main() async {
     });
     File('test/checks/launcher_child.dart').copySync('${held.path}/$childName');
 
+    // PLACED INSIDE THE DIRECTORY THIS TEST HOLDS. Two cases below hand the composed command to the
+    // real binary, which refuses it and writes the refusal beside the runs it was told about
+    // (StartupReason) — without a placement that is RunDirectory.defaultRoot, a directory outside
+    // this repository (`<drive>/var/lib/ansiwise/runs` on Windows), and a test writes nowhere but
+    // its own temp directory (ansiwise-cli#21).
     await DetachedLauncher(
       executable: Platform.resolvedExecutable,
       workingDirectory: held.path,
       newRunId: () => const RunId('the-run-the-launcher-named'),
+      placement: <String>['--runs', '${held.path}/runs'],
     ).start(
       program: const ProgramName(childName),
       mode: Mode.run,
@@ -141,6 +147,17 @@ Future<void> main() async {
         reason:
             'the command was understood and the process stopped at the configuration it names, '
             'which is what says the options were read rather than that it died earlier',
+      );
+      // The refusal was written beside the runs the command names — inside this test's directory,
+      // never under the engine's default root (ansiwise-cli#21).
+      expect(
+        Directory.systemTemp.listSync().whereType<Directory>().any(
+          (Directory d) =>
+              d.path.contains('ansiwise-launcher-options') &&
+              File('${d.path}/runs/the-run-the-launcher-named.startup.log').existsSync(),
+        ),
+        isTrue,
+        reason: 'the startup log of the refused run stands under the held directory',
       );
     }, timeout: const Timeout(Duration(minutes: 2)));
 
