@@ -115,6 +115,73 @@ try {
   }
   Say 'both trees this release pins are reachable and would accept a push'
 
+  # ── the parts, brought onto the same commits before they are named ─────────
+  # EVERY REFERENCE MOVES WITH A RELEASE, AND NOBODY MOVES ONE BY HAND. Each part names its
+  # siblings in its own manifest — ansiwise-checks names ansiwise-core, every package of
+  # ansiwise-plugins names both — and the build resolves all of them together: a part still
+  # naming a sibling at an older commit asks the resolver for one repository at two commits,
+  # which it refuses. So the two trees that name siblings are brought onto the masters this
+  # release names, here, before anything is minted: checks onto core, then plugins onto core and
+  # onto the checks commit that write produced. A tree already there is left alone, so a release
+  # after which nothing moved writes and pushes nothing. As with the pins downstream, the clone
+  # runs no hook and the subject opens with `release:`.
+  function Name-RefIn([string] $Manifest, [string] $Repo, [string] $Sha) {
+    $lines = [System.IO.File]::ReadAllLines($Manifest)
+    $inside = $false
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $lines) {
+      if ($line -match "url:\s*https://github\.com/simetrixch/$([regex]::Escape($Repo))\.git") {
+        $out.Add($line); $inside = $true; continue
+      }
+      if ($inside -and $line -match '^\s*ref:\s*') {
+        $out.Add(($line -replace 'ref:\s*.*', "ref: $Sha")); $inside = $false; continue
+      }
+      $out.Add($line)
+    }
+    [System.IO.File]::WriteAllText($Manifest, ($out -join "`n") + "`n")
+  }
+  function Bring-Onto([string] $Repo, [string] $Subject, [hashtable] $Siblings) {
+    $clone = Join-Path $work $Repo
+    git clone --quiet "https://github.com/simetrixch/$Repo.git" $clone
+    if ($LASTEXITCODE -ne 0) {
+      Die "$Repo could not be cloned, so its references could not be brought onto this release"
+    }
+    $env:GIT_TERMINAL_PROMPT = '0'
+    git -C $clone push --dry-run --quiet origin HEAD 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      Die "this machine may not push to $Repo, so its references could not be brought onto this release"
+    }
+    $manifests = Get-ChildItem -Path $clone -Recurse -Filter pubspec.yaml |
+      Where-Object { $_.FullName -notmatch '\.dart_tool' }
+    foreach ($manifest in $manifests) {
+      foreach ($sibling in $Siblings.Keys) { Name-RefIn $manifest.FullName $sibling $Siblings[$sibling] }
+    }
+    git -C $clone diff --quiet
+    if ($LASTEXITCODE -eq 0) {
+      Say "  $Repo already names its siblings at these commits"
+      return
+    }
+    git -C $clone commit --quiet -a -m $Subject `
+      -m 'Written by the release of ansiwise-cli, so every part names its siblings at the commits this release builds from.'
+    if ($LASTEXITCODE -ne 0) { Die "the references of $Repo could not be committed" }
+    git -C $clone push --quiet origin HEAD
+    if ($LASTEXITCODE -ne 0) {
+      Die "the references of $Repo could not be pushed, so they stand on this machine only"
+    }
+    $at = (git -C $clone rev-parse --short=12 HEAD)
+    Say "  $Repo now names its siblings at these commits, as $at"
+  }
+  $coreSha = (git ls-remote 'https://github.com/simetrixch/ansiwise-core.git' refs/heads/master) -split "`t" | Select-Object -First 1
+  if (-not $coreSha) { Die 'ansiwise-core has no master to build from' }
+  Say "bringing every part onto ansiwise-core at $($coreSha.Substring(0,12)) before it is named"
+  Bring-Onto 'ansiwise-checks' "release: name ansiwise-core at $($coreSha.Substring(0,12))" `
+    @{ 'ansiwise-core' = $coreSha }
+  $checksSha = (git -C (Join-Path $work 'ansiwise-checks') rev-parse HEAD)
+  Bring-Onto 'ansiwise-plugins' `
+    "release: name ansiwise-core at $($coreSha.Substring(0,12)) and ansiwise-checks at $($checksSha.Substring(0,12))" `
+    @{ 'ansiwise-core' = $coreSha; 'ansiwise-checks' = $checksSha }
+  $standing = ". The parts name their siblings at this release's commits, and nothing has been minted"
+
   # ── the exact commit of each part this engine is built from ────────────────
   # A COMMIT, NOT A TAG. The parts are released by nobody, so there is no tag of theirs to name —
   # and a commit is the stronger statement anyway: a tag can be moved onto another tree, a commit

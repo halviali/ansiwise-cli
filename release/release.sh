@@ -89,6 +89,57 @@ GIT_TERMINAL_PROMPT=0 git -C "$WORK/catalog" push --dry-run --quiet origin HEAD 
   || die "this machine may not push to ${CATALOG_REPO}, so this release could not write its pin"
 say "both trees this release pins are reachable and would accept a push"
 
+# ── the parts, brought onto the same commits before they are named ──────────
+# EVERY REFERENCE MOVES WITH A RELEASE, AND NOBODY MOVES ONE BY HAND. Each part names its
+# siblings in its own manifest — ansiwise-checks names ansiwise-core, every package of
+# ansiwise-plugins names both — and the build resolves all of them together: a part still
+# naming a sibling at an older commit asks the resolver for one repository at two commits,
+# which it refuses. So the two trees that name siblings are brought onto the masters this
+# release names, here, before anything is minted: checks onto core, then plugins onto core and
+# onto the checks commit that write produced. A tree already there is left alone, so a release
+# after which nothing moved writes and pushes nothing. As with the pins downstream, the clone
+# runs no hook and the subject opens with `release:`.
+name_ref_in() { # <manifest> <repo> <commit>
+  awk -v repo="$2" -v sha="$3" '
+    $0 ~ "url: https://github.com/simetrixch/" repo "\\.git" { print; inside = 1; next }
+    inside && /^[ \t]*ref:[ \t]*/ { sub(/ref:[ \t]*.*/, "ref: " sha); inside = 0 }
+    { print }
+  ' "$1" > "$1.next"
+  mv "$1.next" "$1"
+}
+bring_onto() { # <repo> <subject> [<sibling> <commit>]...
+  local repo="$1" subject="$2" clone="$WORK/$1" manifest
+  shift 2
+  git clone --quiet "https://github.com/simetrixch/${repo}.git" "$clone" \
+    || die "${repo} could not be cloned, so its references could not be brought onto this release"
+  GIT_TERMINAL_PROMPT=0 git -C "$clone" push --dry-run --quiet origin HEAD >/dev/null 2>&1 \
+    || die "this machine may not push to ${repo}, so its references could not be brought onto this release"
+  while [ $# -ge 2 ]; do
+    while IFS= read -r manifest; do
+      name_ref_in "$manifest" "$1" "$2"
+    done < <(find "$clone" -name pubspec.yaml -not -path '*/.dart_tool/*')
+    shift 2
+  done
+  if git -C "$clone" diff --quiet; then
+    say "  ${repo} already names its siblings at these commits"
+    return 0
+  fi
+  git -C "$clone" commit --quiet -a -m "$subject" \
+    -m "Written by the release of ansiwise-cli, so every part names its siblings at the commits this release builds from." \
+    || die "the references of ${repo} could not be committed"
+  git -C "$clone" push --quiet origin HEAD \
+    || die "the references of ${repo} could not be pushed, so they stand on this machine only"
+  say "  ${repo} now names its siblings at these commits, as $(git -C "$clone" rev-parse --short=12 HEAD)"
+}
+CORE_SHA="$(git ls-remote "https://github.com/simetrixch/ansiwise-core.git" refs/heads/master | cut -f1)"
+[ -n "$CORE_SHA" ] || die "ansiwise-core has no master to build from"
+say "bringing every part onto ansiwise-core at ${CORE_SHA:0:12} before it is named"
+bring_onto ansiwise-checks "release: name ansiwise-core at ${CORE_SHA:0:12}" ansiwise-core "$CORE_SHA"
+CHECKS_SHA="$(git -C "$WORK/ansiwise-checks" rev-parse HEAD)"
+bring_onto ansiwise-plugins "release: name ansiwise-core at ${CORE_SHA:0:12} and ansiwise-checks at ${CHECKS_SHA:0:12}" \
+  ansiwise-core "$CORE_SHA" ansiwise-checks "$CHECKS_SHA"
+STANDING=". The parts name their siblings at this release's commits, and nothing has been minted"
+
 # ── the exact commit of each part this engine is built from ──────────────────
 # A COMMIT, NOT A TAG. The parts are released by nobody, so there is no tag of
 # theirs to name — and a commit is the stronger statement anyway: a tag can be
